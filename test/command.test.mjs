@@ -1,0 +1,431 @@
+// test/command.test.mjs — REQ-42 /import 命令面
+//
+// 用真实 registerTools（填充 IMPORT_SPECS）+ registerImportCommand + mock ctx 验证
+// 命令 handler：解析（短名/全名/客户端 id 三态）、单文件导入、幂等重导、未知来源
+// 与缺参错误路径。fixture 用真实临时目录（mkdtemp，跨平台安全，check:linux 规则）。
+
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtempSync, writeFileSync, statSync, mkdirSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { registerTools } from '../lib/tools.mjs'
+import { registerImportCommand } from '../lib/command.mjs'
+import { CHAT_FORMAT_NAMES } from '../lib/toolkit.mjs'
+import { makeCtx as makeHostCtx, makeRegistrar } from './_support/fake-host.mjs'
+
+// 最小 Claude transcript（user + assistant 两行；cwd 用不存在路径触发 REQ-39-lite
+// 回退归组到源目录——mkdtemp 目录真实存在，attach 不落「未分组」）。
+function simpleClaudeJsonl(sessionId) {
+  return [
+    JSON.stringify({ parentUuid: null, userType: 'user', cwd: 'D:\\no-such\\proj', sessionId, type: 'user', message: { role: 'user', content: '你好' }, uuid: 'u-1', timestamp: '2026-08-01T10:00:00.000Z' }),
+    JSON.stringify({ parentUuid: null, userType: 'user', cwd: 'D:\\no-such\\proj', sessionId, type: 'assistant', message: { role: 'assistant', content: '好的' }, uuid: 'a-1', timestamp: '2026-08-01T10:00:01.000Z' }),
+  ].join('\n') + '\n'
+}
+
+// 真实临时目录上的 ctx（fs 全部回退 node:fs）+ commands 服务（命令注册可观测）。
+// workspaceRegistry 只接受磁盘上真实存在的目录（宿主 realpath 校验）：cwd 不存在 →
+// 创建失败 → attachToWorkspace 触发 REQ-39-lite 回退。
+function makeCtx() {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-cmd-'))
+  const registryDir = join(home, 'dsh-chat-import')
+  mkdirSync(registryDir, { recursive: true })
+  const commands = makeRegistrar()
+  const isDir = (p) => { try { return statSync(p).isDirectory() } catch { /* 不存在 → 非目录 */ return false } }
+  const host = makeHostCtx(null, {
+    real: true,
+    services: { commands },
+    rejectWorkspaceCreate: (p) => !isDir(p),
+    // 会话库有读面但读不出事件：源增长时插件拿不到 DSH 侧日志长度（见「读不到日志」用例）
+    persistenceOptions: { unreadable: true },
+  })
+  return {
+    ...host,
+    registryDir,
+    sessions: host.persistence.sessions,
+    getCommand: (name) => commands.find(name || 'import'),
+    getAllCommands: () => commands.defs,
+  }
+}
+
+function setup() {
+  const env = makeCtx()
+  registerTools(env.ctx, env.registryDir)
+  registerImportCommand(env.ctx, env.registryDir)
+  const cmd = env.getCommand()
+  assert.ok(cmd, 'commands.register 应被调用（commands 服务在场）')
+  return { ...env, cmd }
+}
+
+test('REQ-42 /import 命令注册契约（name/description/input.hint）', () => {
+  const { cmd } = setup()
+  assert.equal(cmd.name, 'import')
+  assert.equal(cmd.input.hint, '<source> <path>')
+  assert.ok(cmd.description.includes('/import <source> <path>'))
+  assert.equal(typeof cmd.handler, 'function')
+})
+
+// REQ-42 所有命令 input.hint 非空：dsh-commands 的 normalizeDefinition 对空
+// hint（hint: ''）会硬抛 TypeError，导致插件 apply 阶段加载失败、被 DSH 启动
+// 校验自动回滚。凡带 input 的命令，hint 必须是含非空白字符的字符串。
+test('REQ-42 全部命令 input.hint 非空（空 hint 会致插件加载失败回滚）', () => {
+  const { getAllCommands } = setup()
+  const commands = getAllCommands()
+  assert.ok(commands.length >= 7, `应注册 7 条命令，实际 ${commands.length}`)
+  for (const c of commands) {
+    if (c.input) {
+      assert.equal(typeof c.input.hint, 'string', `命令 ${c.name} 的 input.hint 应为字符串`)
+      assert.ok(c.input.hint.trim().length > 0, `命令 ${c.name} 的 input.hint 不能为空（''）`)
+    }
+  }
+})
+
+test('REQ-42 /import claude <path>：单文件导入成功并落盘会话', async () => {
+  const { cmd, sessions, attached, workspaces } = setup()
+  const file = join(mkdtempSync(join(tmpdir(), 'dsh-cmd-src-')), 'cmd-sess.jsonl')
+  writeFileSync(file, simpleClaudeJsonl('cmd-sess'), 'utf8')
+
+  const out = await cmd.handler({ rawInput: 'claude ' + file })
+  assert.equal(out.kind, 'success')
+  assert.ok(out.text.includes('已导入'), 'text: ' + out.text)
+  assert.ok(out.text.includes('cmd-sess'), 'text 含会话 id: ' + out.text)
+  assert.ok([...sessions.keys()].some((id) => id.includes('cmd-sess')),
+    '会话已落盘（import-<src> 前缀）: ' + [...sessions.keys()].join(','))
+  // cwd 不可解析（跨机器路径）→ 落点是专用导入工作区；源文件目录**不**被建成工作区
+  // （宿主只接受 cwd 与原工作区路径相等的挂接，源目录回退只会留下空工作区 + 未分组）
+  assert.ok(attached.length > 0, '已归组到工作区')
+  assert.ok(attached[0].ws.includes('dsh-chat-import-workspace'),
+    '落点为专用导入工作区: ' + attached[0].ws)
+  assert.ok(![...workspaces.keys()].some((p) => p.includes('cmd-src-')),
+    '不得为源文件目录建工作区: ' + [...workspaces.keys()].join(','))
+})
+
+test('REQ-42 /import：幂等重导跳过（源未变）', async () => {
+  const { cmd } = setup()
+  const file = join(mkdtempSync(join(tmpdir(), 'dsh-cmd-src2-')), 'cmd-sess.jsonl')
+  writeFileSync(file, simpleClaudeJsonl('cmd-sess'), 'utf8')
+
+  const first = await cmd.handler({ rawInput: 'claude ' + file })
+  assert.equal(first.kind, 'success')
+  const second = await cmd.handler({ rawInput: 'claude ' + file })
+  assert.equal(second.kind, 'success')
+  assert.ok(second.text.includes('已存在'), '重导应幂等跳过: ' + second.text)
+})
+
+// /import 与 import_chat 工具共用同一份结果文案：跳过原因要说全。命令面曾自带一份
+// 简化文案，漏掉 appendedSkipped / backfilled——源文件长了却读不到 DSH 侧日志长度时，
+// 只会说「源文件未变化」。本 mock 的 sessionPersistence 没有可读事件面，正好落进该分支。
+test('REQ-42 /import：源增长但读不到 DSH 侧日志长度 → 如实说明跳过原因（与工具文案同源）', async () => {
+  const { cmd } = setup()
+  const file = join(mkdtempSync(join(tmpdir(), 'dsh-cmd-grow-')), 'cmd-sess.jsonl')
+  writeFileSync(file, simpleClaudeJsonl('cmd-sess'), 'utf8')
+
+  const first = await cmd.handler({ rawInput: 'claude ' + file })
+  assert.equal(first.kind, 'success', first.text)
+  writeFileSync(file, simpleClaudeJsonl('cmd-sess') + [
+    JSON.stringify({ parentUuid: 'a-1', userType: 'user', cwd: 'D:\\no-such\\proj', sessionId: 'cmd-sess', type: 'user', message: { role: 'user', content: '再问一句' }, uuid: 'u-2', timestamp: '2026-08-01T10:00:02.000Z' }),
+    JSON.stringify({ parentUuid: 'u-2', userType: 'user', cwd: 'D:\\no-such\\proj', sessionId: 'cmd-sess', type: 'assistant', message: { role: 'assistant', content: '再答一句' }, uuid: 'a-2', timestamp: '2026-08-01T10:00:03.000Z' }),
+  ].join('\n') + '\n', 'utf8')
+  const again = await cmd.handler({ rawInput: 'claude ' + file })
+  assert.equal(again.kind, 'success', again.text)
+  assert.ok(again.text.includes('读不到 DSH 侧日志长度'), again.text)
+})
+
+test('REQ-42 /import：工具全名 import_claude 与客户端来源 id claude-code 均接受', async () => {
+  const { cmd } = setup()
+  const file = join(mkdtempSync(join(tmpdir(), 'dsh-cmd-src3-')), 'cmd-sess.jsonl')
+  writeFileSync(file, simpleClaudeJsonl('cmd-sess'), 'utf8')
+
+  const a = await cmd.handler({ rawInput: 'import_claude ' + file })
+  assert.equal(a.kind, 'success', a.text)
+  const b = await cmd.handler({ rawInput: 'claude-code ' + file })
+  assert.equal(b.kind, 'success', b.text)
+})
+
+test('REQ-42 /import：qoder 短名与工具全名 import_qoder 均接受', async () => {
+  const { cmd } = setup()
+  const file = join(mkdtempSync(join(tmpdir(), 'dsh-cmd-src4-')), 'qoder-sess.jsonl')
+  writeFileSync(file, [
+    JSON.stringify({ sessionId: 'qoder-sess', type: 'user', cwd: 'D:\\no-such\\proj', message: { role: 'user', content: '你好' }, timestamp: '2026-08-01T10:00:00.000Z' }),
+    JSON.stringify({ sessionId: 'qoder-sess', type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '好的' }] }, timestamp: '2026-08-01T10:00:01.000Z' }),
+  ].join('\n') + '\n', 'utf8')
+
+  const a = await cmd.handler({ rawInput: 'qoder ' + file })
+  assert.equal(a.kind, 'success', a.text)
+  const b = await cmd.handler({ rawInput: 'import_qoder ' + file })
+  assert.equal(b.kind, 'success', b.text)
+})
+
+test('REQ-42 /import：未知来源报错', async () => {
+  const { cmd } = setup()
+  const out = await cmd.handler({ rawInput: 'foobar C:\\x.jsonl' })
+  assert.equal(out.kind, 'error')
+  assert.ok(out.text.includes('未知来源'), out.text)
+})
+
+test('/import：import_chat 的每个 format 都是合法来源名（别名表由 CHAT_FORMAT_NAMES 派生）', async () => {
+  const { cmd } = setup()
+  for (const f of CHAT_FORMAT_NAMES) {
+    const out = await cmd.handler({ rawInput: f + ' ' + join(tmpdir(), 'dsh-missing-' + f) })
+    assert.ok(!String(out.text).includes('未知来源'), f + ' 被当成未知来源：' + out.text)
+  }
+  for (const f of ['kilocode', 'antigravity', 'dsh4']) assert.ok(cmd.description.includes(f), '用法里列出 ' + f)
+})
+
+test('REQ-42 /import：缺 path 报用法', async () => {
+  const { cmd } = setup()
+  const out = await cmd.handler({ rawInput: 'claude' })
+  assert.equal(out.kind, 'error')
+  assert.ok(out.text.includes('用法'), out.text)
+  const empty = await cmd.handler({ rawInput: '' })
+  assert.equal(empty.kind, 'error')
+  assert.ok(empty.text.includes('用法'), empty.text)
+})
+
+// ── REQ-29 /import-all 批量命令 ───────────────────────────────────────────
+
+test('REQ-29 /import-all：命令注册 + 指定路径批量导入 + 幂等重导跳过', async () => {
+  const env = makeCtx()
+  registerTools(env.ctx, env.registryDir)
+  registerImportCommand(env.ctx, env.registryDir)
+  const cmd = env.getCommand('import-all')
+  assert.ok(cmd, 'import-all 命令应注册')
+  assert.equal(cmd.input.hint, '[source] [path] [--force]')
+  assert.ok(cmd.description.includes('/import-all'))
+
+  const srcDir = mkdtempSync(join(tmpdir(), 'dsh-importall-src-'))
+  const file = join(srcDir, 'all-sess.jsonl')
+  writeFileSync(file, simpleClaudeJsonl('all-sess'), 'utf8')
+
+  // 指定来源 + 路径：扫描 → 导入
+  const first = await cmd.handler({ rawInput: 'claude ' + srcDir })
+  assert.equal(first.kind, 'success', first.text)
+  assert.ok(first.text.includes('扫描 1 个会话'), first.text)
+  assert.ok(first.text.includes('新增 1'), first.text)
+  assert.ok([...env.sessions.keys()].some((id) => id.includes('all-sess')))
+
+  // 幂等：已导入 → 跳过（不再出现「新增」）
+  const second = await cmd.handler({ rawInput: 'claude ' + srcDir })
+  assert.equal(second.kind, 'success', second.text)
+  assert.ok(!second.text.includes('新增 1'), second.text)
+  assert.ok(second.text.includes('跳过'), second.text)
+})
+
+test('REQ-29 /import-all：仅路径（全部格式探测）+ 未知来源提示', async () => {
+  const env = makeCtx()
+  registerTools(env.ctx, env.registryDir)
+  registerImportCommand(env.ctx, env.registryDir)
+  const cmd = env.getCommand('import-all')
+
+  // 首 token 不是来源名 → 整体按路径（无 format 时逐格式探测同一目录）
+  const srcDir = mkdtempSync(join(tmpdir(), 'dsh-importall-src2-'))
+  writeFileSync(join(srcDir, 'sess.jsonl'), simpleClaudeJsonl('sess'), 'utf8')
+  const byPath = await cmd.handler({ rawInput: srcDir })
+  assert.equal(byPath.kind, 'success', byPath.text)
+  assert.ok(byPath.text.includes('新增 1'), byPath.text)
+
+  // 来源名 typo（claude 前缀命中）→ 报未知来源而非静默当路径
+  const typo = await cmd.handler({ rawInput: 'claud' })
+  assert.equal(typo.kind, 'error')
+  assert.ok(typo.text.includes('未知来源'), typo.text)
+})
+
+test('REQ-29 /import-all --force：带 path 时重导已导入会话（另铸副本）；不带 path 时拒绝', async () => {
+  const env = makeCtx()
+  registerTools(env.ctx, env.registryDir)
+  registerImportCommand(env.ctx, env.registryDir)
+  const cmd = env.getCommand('import-all')
+
+  const srcDir = mkdtempSync(join(tmpdir(), 'dsh-importall-force-'))
+  writeFileSync(join(srcDir, 'forced.jsonl'), simpleClaudeJsonl('forced'), 'utf8')
+
+  const first = await cmd.handler({ rawInput: 'claude ' + srcDir })
+  assert.equal(first.kind, 'success', first.text)
+  assert.ok(first.text.includes('新增 1'), first.text)
+
+  // --force 摘成开关：不参与路径解析（此前会被当成路径去扫一个不存在的目录）
+  const forced = await cmd.handler({ rawInput: '--force claude ' + srcDir })
+  assert.equal(forced.kind, 'success', forced.text)
+  assert.ok(forced.text.includes('新增 1'), forced.text)
+  assert.equal([...env.sessions.keys()].filter((id) => id.includes('forced')).length, 2, '应另铸一份副本')
+
+  // 不限定范围的全量 --force 会重导每一个已导入会话 → 拒绝并说明用法
+  const unbounded = await cmd.handler({ rawInput: '--force' })
+  assert.equal(unbounded.kind, 'error')
+  assert.ok(unbounded.text.includes('必须带 path'), unbounded.text)
+})
+
+test('REQ-29 /import-all：扫描失败的来源如实点名（不再读成「扫描 0 个会话」）', async () => {
+  const env = makeCtx()
+  registerTools(env.ctx, env.registryDir)
+  registerImportCommand(env.ctx, env.registryDir)
+  const cmd = env.getCommand('import-all')
+
+  // trae 的库读取对「存在但不是 SQLite」的文件大声抛错（见 trae 用例）→ 该目标进 scan
+  // warnings；命令面必须点名这个来源，而不是报「扫描 0 个会话」了事。
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-importall-warn-'))
+  writeFileSync(join(dir, 'state.vscdb'), 'not a sqlite database\n', 'utf8')
+  const out = await cmd.handler({ rawInput: 'trae ' + dir })
+  assert.ok(out.text.includes('/import-all 完成：扫描 0 个会话'), out.text)
+  assert.ok(out.text.includes('! trae 扫描失败（' + dir + '）'), out.text)
+  assert.ok(out.text.includes('file is not a database'), out.text)
+})
+
+// ── /attach-workspaces ──────────────────────────────────────────────
+
+test('/attach-workspaces：命令注册 + 按 imports registry 回填', async () => {
+  const env = makeCtx()
+  registerTools(env.ctx, env.registryDir)
+  registerImportCommand(env.ctx, env.registryDir)
+  const cmd = env.getCommand('attach-workspaces')
+  assert.ok(cmd, 'attach-workspaces 命令应注册')
+  assert.ok(cmd.description.includes('workspace'))
+
+  // 先导入一个 Claude 会话，产生 imports registry 记录
+  const file = join(mkdtempSync(join(tmpdir(), 'dsh-attach-src-')), 'attach-sess.jsonl')
+  writeFileSync(file, simpleClaudeJsonl('attach-sess'), 'utf8')
+  const importCmd = env.getCommand('import')
+  const imported = await importCmd.handler({ rawInput: 'claude ' + file })
+  assert.equal(imported.kind, 'success', imported.text)
+
+  const before = env.attached.length
+  const out = await cmd.handler({ rawInput: '' })
+  assert.equal(out.kind, 'success', out.text)
+  assert.ok(out.text.includes('扫描 1 条导入记录'), out.text)
+  assert.ok(out.text.includes('已挂接 1'), out.text)
+  assert.ok(env.attached.length >= before, 'attach 应被再次调用/回填')
+})
+
+// ── /doctor ─────────────────────────────────────────────────────────
+
+test('/doctor：命令注册 + 导入后健康检查通过', async () => {
+  const env = makeCtx()
+  registerTools(env.ctx, env.registryDir)
+  registerImportCommand(env.ctx, env.registryDir)
+  const cmd = env.getCommand('doctor')
+  assert.ok(cmd, 'doctor 命令应注册')
+  assert.ok(cmd.description.includes('健康检查'))
+
+  // 未导入时 registry 为空：会报 issue，但命令仍可执行
+  const empty = await cmd.handler({ rawInput: '' })
+  assert.equal(empty.kind, 'error', empty.text)
+  assert.ok(empty.text.includes('registry 为空'), empty.text)
+
+  // 导入一个会话后：registry 有记录、会话存在、workspaceRegistry 可用 → 健康
+  const file = join(mkdtempSync(join(tmpdir(), 'dsh-doctor-src-')), 'doctor-sess.jsonl')
+  writeFileSync(file, simpleClaudeJsonl('doctor-sess'), 'utf8')
+  const importCmd = env.getCommand('import')
+  const imported = await importCmd.handler({ rawInput: 'claude ' + file })
+  assert.equal(imported.kind, 'success', imported.text)
+
+  const out = await cmd.handler({ rawInput: '' })
+  assert.equal(out.kind, 'success', out.text)
+  assert.ok(out.text.includes('会话 1 个'), out.text)
+})
+
+test('issue #41 /doctor：报告磁盘上既不在 registry 也不在宿主的残留导入会话目录', async () => {
+  const env = makeCtx()
+  registerTools(env.ctx, env.registryDir)
+  registerImportCommand(env.ctx, env.registryDir)
+  const cmd = env.getCommand('doctor')
+  // 宿主读不出的旧格式/半成品导入会话目录：sessionPersistence.list() 不暴露、
+  // registry 也无记录，但目录仍占用会话 id
+  mkdirSync(join(dirname(env.registryDir), 'sessions', 'bucket-a', 'import-ghost-1'), { recursive: true })
+
+  const out = await cmd.handler({ rawInput: '' })
+  assert.equal(out.kind, 'error')
+  assert.ok(out.text.includes('import-ghost-1'), out.text)
+  assert.ok(out.text.includes('既不在 imports registry 也不在 sessionPersistence'), out.text)
+
+  // 正常导入的会话（registry 有记录、宿主列出）不被误报为残留
+  const file = join(mkdtempSync(join(tmpdir(), 'dsh-doctor-src-')), 'doctor-stray.jsonl')
+  writeFileSync(file, simpleClaudeJsonl('doctor-stray'), 'utf8')
+  const importCmd = env.getCommand('import')
+  assert.equal((await importCmd.handler({ rawInput: 'claude ' + file })).kind, 'success')
+  const after = await cmd.handler({ rawInput: '' })
+  assert.ok(!after.text.includes('import-doctor-stray'), after.text)
+})
+
+// ── （缓存重置）/import-reset ────────────────────────────────────────
+
+test('/import-reset：清空扫描缓存与持久书签，不影响导入', async () => {
+  const env = makeCtx()
+  registerTools(env.ctx, env.registryDir)
+  registerImportCommand(env.ctx, env.registryDir)
+  const cmd = env.getCommand('import-reset')
+  assert.ok(cmd, 'import-reset 命令应注册')
+  assert.ok(cmd.description.includes('扫描缓存'))
+
+  // 制造一个持久书签文件
+  const cacheFile = join(env.registryDir, 'scan-cache.json')
+  writeFileSync(cacheFile, JSON.stringify({ version: 1, bookmarks: {} }), 'utf8')
+  assert.ok(existsSync(cacheFile))
+
+  const out = await cmd.handler({ rawInput: '' })
+  assert.equal(out.kind, 'success', out.text)
+  assert.ok(out.text.includes('扫描缓存已清空'), out.text)
+  assert.ok(!existsSync(cacheFile), 'scan-cache.json 已删除')
+})
+
+// ── workspaceMode：/attach-workspaces --mode dedicated ────────────────
+
+test('/attach-workspaces：dedicated 模式把所有导入会话挂到单个工作区', async () => {
+  const env = makeCtx()
+  registerTools(env.ctx, env.registryDir)
+  registerImportCommand(env.ctx, env.registryDir)
+  const cmd = env.getCommand('attach-workspaces')
+  assert.ok(cmd, 'attach-workspaces 命令应注册')
+
+  const file = join(mkdtempSync(join(tmpdir(), 'dsh-dedicated-src-')), 'dedicated-sess.jsonl')
+  writeFileSync(file, simpleClaudeJsonl('dedicated-sess'), 'utf8')
+  const importCmd = env.getCommand('import')
+  const imported = await importCmd.handler({ rawInput: 'claude ' + file })
+  assert.equal(imported.kind, 'success', imported.text)
+
+  const dedicatedDir = join(mkdtempSync(join(tmpdir(), 'dsh-dedicated-ws-')), 'workspace')
+  const out = await cmd.handler({ rawInput: '--mode dedicated --dir ' + dedicatedDir })
+  assert.equal(out.kind, 'success', out.text)
+  assert.ok(out.text.includes('模式 dedicated'), out.text)
+  assert.ok(out.text.includes('已挂接 1'), out.text)
+  assert.ok(env.attached.some((a) => a.ws === dedicatedDir), '会话挂到 dedicated workspace: ' + JSON.stringify(env.attached))
+})
+
+// REQ-42 /import auto：任意本地文件（三级探测）——generic 文档与未知格式各走各的
+test('REQ-42 /import auto：generic 文档直接导入（内容标记命中）', async () => {
+  const { cmd, sessions } = setup()
+  const file = join(mkdtempSync(join(tmpdir(), 'dsh-cmd-auto-')), 'long-tail.json')
+  writeFileSync(file, JSON.stringify({
+    interchange: 'dsh-chat-import',
+    version: 1,
+    meta: { id: 'auto-generic', createdAt: 1700000000000 },
+    title: '长尾会话',
+    provider: 'demo-tool',
+    turns: [{ prompt: '问一句', steps: [{ content: [{ type: 'text', text: '答一句' }] }] }],
+  }), 'utf8')
+
+  const out = await cmd.handler({ rawInput: 'auto ' + file })
+  assert.equal(out.kind, 'success', out.text)
+  assert.ok(out.text.includes('已导入'), 'text: ' + out.text)
+  assert.ok([...sessions.keys()].some((id) => id.includes('auto-generic')), [...sessions.keys()].join(','))
+})
+
+test('REQ-42 /import auto：未识别文件如实报跳过（不产出空壳会话）', async () => {
+  const { cmd, sessions } = setup()
+  const file = join(mkdtempSync(join(tmpdir(), 'dsh-cmd-junk-')), 'junk.jsonl')
+  writeFileSync(file, '{"foo":1}\n{"bar":2}\n', 'utf8')
+
+  const out = await cmd.handler({ rawInput: 'auto ' + file })
+  assert.equal(out.kind, 'success', out.text)
+  assert.ok(out.text.includes('跳过'), 'text: ' + out.text)
+  assert.equal(sessions.size, 0)
+})
+
+test('REQ-42 /import local-jsonl 与 auto 同义（强制解析器留给工具面 parseFormat）', async () => {
+  const { cmd } = setup()
+  const file = join(mkdtempSync(join(tmpdir(), 'dsh-cmd-lj-')), 'cmd-sess.jsonl')
+  writeFileSync(file, simpleClaudeJsonl('cmd-sess-lj'), 'utf8')
+
+  const out = await cmd.handler({ rawInput: 'local-jsonl ' + file })
+  assert.equal(out.kind, 'success', out.text)
+  assert.ok(out.text.includes('已导入'), 'text: ' + out.text)
+})

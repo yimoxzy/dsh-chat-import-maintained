@@ -1,0 +1,194 @@
+// cwd-map.test.mjs — REQ-39 full 单测：slug 编解码 / Claude 权威映射 / Reasonix 贪心
+// 解码 / home-dir 沙箱判定（纯函数 + mock fs）。
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { slugifyClaudeCwd, decodeClaudeSlug, isHomePath, isEphemeralRunDir, resolveClaudeCwd, greedyDecodeSlugPath, encodeCursorSlug, resolveCursorSlugPath, greedyDecodeCursorSlugPath, parseCursorEmbeddedTimestamp, stripCursorTitleDecorations, isCursorNonRepoSlug, clearWorkspacePathCache } from '../lib/cwd-map.mjs'
+import { makeFs } from './_support/fake-host.mjs'
+
+test('slugifyClaudeCwd / decodeClaudeSlug: 编码往返 + 中文路径 + 盘符边界', () => {
+  const cwd = 'C:\\Users\\示例用户\\my-proj'
+  const slug = slugifyClaudeCwd(cwd)
+  assert.equal(slug, 'C--Users-示例用户-my-proj')
+  // 解码（有损兜底：my-proj 会被拆成 my/proj，已知歧义）
+  const decoded = decodeClaudeSlug(slug)
+  assert.equal(decoded, 'C:\\Users\\示例用户\\my\\proj')
+  // 无盘符形态
+  assert.equal(decodeClaudeSlug('users-name'), 'users\\name')
+  assert.equal(decodeClaudeSlug(''), null)
+})
+
+test('isEphemeralRunDir: 末段是纯时间戳的一次性运行目录识别（桌面客户端每会话开一个新工作目录）', () => {
+  // 应识别：CodeArts Desktop (<root>/2026-10-30-00-40-33) 与 WorkBuddy Desktop
+  //（<root>/2026-10-27-13-46-52）每会话都在日期名目录下开工，末段整段是时间戳。
+  for (const p of [
+    'C:\\Users\\u\\codearts\\2026-10-30-00-40-33',
+    'C:\\Users\\u\\WorkBuddy AI\\2026-10-27-13-46-52',
+    '/tmp/run/2026-10-30',
+    '/tmp/run/20261030',
+    '/tmp/run/2026-10-30T00-40-33',
+    '/tmp/run/2026_10_30',
+    '/tmp/run/1793392449945',
+  ]) assert.equal(isEphemeralRunDir(p), true, p)
+
+  // 不应识别：真实项目路径、客户端按会话命名但非日期的目录，以及末段不是纯时间戳的日期目录
+  for (const p of [
+    'S:\\apps\\llm\\agentwork',
+    'C:\\Users\\u\\WorkBuddy AI\\Claw',
+    'S:\\proj\\2026-10-30-release',
+    'S:\\proj\\release-2026-10-30',
+    'C:\\Users\\takomi\\codearts',
+    '/home/u/repo',
+    '',
+  ]) assert.equal(isEphemeralRunDir(p), false, p)
+  assert.equal(isEphemeralRunDir(null), false)
+  assert.equal(isEphemeralRunDir(undefined), false)
+})
+
+test('isHomePath: 主目录（含尾斜杠/大小写变体）判定，非主目录排除', () => {
+  const home = homedir().replace(/[\\/]+$/, '')
+  assert.equal(isHomePath(home), true)
+  assert.equal(isHomePath(home + '\\'), true)
+  assert.equal(isHomePath(home + '\\projects'), false)
+  assert.equal(isHomePath(''), false)
+})
+
+// 只有内存树 fs 的 ctx（不回退真实磁盘：主目录下的真实 ~/.claude.json 不得干扰断言）。
+const makeFsTree = (tree) => ({ fs: makeFs(tree, { real: false }) })
+
+test('resolveClaudeCwd: ~/.claude.json projects 权威映射（精确 / basename / 下划线变体）', async () => {
+  const home = homedir().replace(/[\\/]+$/, '')
+  const claudeJson = JSON.stringify({
+    projects: {
+      'D:\\work\\my-proj': { folderName: 'my-proj' },
+      'C:\\Users\\name\\proj_a': { folderName: 'proj_a' },
+      'E:\\deep\\nested\\target': { folderName: 'target' },
+    },
+  })
+  // 夹具键按本平台分隔符拼（与实现同口径）：POSIX 上 home + '\\.claude.json' 根本不是那个文件
+  const ctx = makeFsTree({ [join(home, '.claude.json')]: claudeJson })
+  // 精确：slugify('D:\work\my-proj') = 'D--work-my-proj'
+  assert.equal(await resolveClaudeCwd(ctx, 'D--work-my-proj'), 'D:\\work\\my-proj')
+  // basename 变体：slug 只含 basename
+  assert.equal(await resolveClaudeCwd(ctx, 'my-proj'), 'D:\\work\\my-proj')
+  // 下划线变体：'proj_a' 的 slugify = 'proj-a' → underscore 匹配
+  assert.equal(await resolveClaudeCwd(ctx, 'proj-a'), 'C:\\Users\\name\\proj_a')
+  // 无命中 → null
+  assert.equal(await resolveClaudeCwd(ctx, 'no-such-project'), null)
+})
+
+test('resolveClaudeCwd: 按本平台路径口径定位 ~/.claude.json（POSIX 上不得拼出反斜杠）', async () => {
+  const asked = []
+  const ctx = {
+    fs: {
+      async resolve(path) { asked.push(path); return { targetKey: path, displayPath: path } },
+      async readText() { return JSON.stringify({ projects: { '/work/demo': {} } }) },
+    },
+  }
+  await resolveClaudeCwd(ctx, '-work-demo')
+  assert.deepEqual(asked, [join(homedir(), '.claude.json')])
+})
+
+test('resolveClaudeCwd: ~/.claude.json 缺失/损坏 → null（回退解码不崩）', async () => {
+  const home = homedir().replace(/[\\/]+$/, '')
+  const ctx = makeFsTree({})
+  assert.equal(await resolveClaudeCwd(ctx, 'C--Users-name'), null)
+  const bad = makeFsTree({ [join(home, '.claude.json')]: 'not json' })
+  assert.equal(await resolveClaudeCwd(bad, 'C--Users-name'), null)
+})
+
+test('greedyDecodeSlugPath: 整段命中 → 直接返回真实路径', async () => {
+  const ctx = makeFsTree({
+    'C:\\users\\alice\\work': 'dir',
+  })
+  assert.equal(await greedyDecodeSlugPath(ctx, 'c--users--alice--work'), 'C:\\users\\alice\\work')
+})
+
+test('greedyDecodeSlugPath: 含 - 目录名逐段贪心（单段 → 合并 ≤3 段）', async () => {
+  const ctx = makeFsTree({
+    'C:\\users': 'dir',
+    'C:\\users\\alice': 'dir',
+    'C:\\users\\alice\\my-proj': 'dir',
+  })
+  // slug 'c--users--alice--my--proj'：整段不命中（my-proj 是单目录），贪心逐段：
+  // 'users' 单段命中 → 'alice' 单段命中 → 剩余 'my'/'proj' 单段不命中 → 合并 2 段
+  // 'my-proj' 命中
+  assert.equal(await greedyDecodeSlugPath(ctx, 'c--users--alice--my--proj'), 'C:\\users\\alice\\my-proj')
+})
+
+test('greedyDecodeSlugPath: 全程不命中 → null；无盘符 slug 也支持', async () => {
+  const ctx = makeFsTree({ 'C:\\users\\alice': 'dir' })
+  assert.equal(await greedyDecodeSlugPath(ctx, 'c--users--bob'), null)
+  const noDrive = makeFsTree({ 'users\\alice': 'dir' })
+  assert.equal(await greedyDecodeSlugPath(noDrive, 'users--alice'), 'users\\alice')
+  assert.equal(await greedyDecodeSlugPath(ctx, ''), null)
+})
+
+test('encodeCursorSlug: 盘符 + 路径分隔符与 . 均编码为 -', () => {
+  assert.equal(
+    encodeCursorSlug('E:\\dev-suite\\demo.Client-app'),
+    'e-dev-suite-demo-Client-app',
+  )
+  assert.equal(
+    encodeCursorSlug('E:\\dev-suite\\scheduled-tasks\\publish-fail-monitor'),
+    'e-dev-suite-scheduled-tasks-publish-fail-monitor',
+  )
+  assert.equal(encodeCursorSlug('C:\\Users\\Administrator\\Desktop'), 'c-Users-Administrator-Desktop')
+})
+
+test('resolveCursorSlugPath: workspace.json/registry 正向匹配 + 点号目录贪心解码', async () => {
+  clearWorkspacePathCache()
+  const tree = {
+    'E:\\dev-suite': 'dir',
+    'E:\\dev-suite\\demo.Client-app': 'dir',
+    'E:\\dev-suite\\scheduled-tasks': 'dir',
+    'E:\\dev-suite\\scheduled-tasks\\publish-fail-monitor': 'dir',
+  }
+  const ctx = {
+    ...makeFsTree(tree),
+    get(service) {
+      if (service === 'workspaceRegistry') {
+        return {
+          list: () => [
+            { path: 'E:\\dev-suite\\demo.Client-app' },
+            { path: 'E:\\dev-suite\\scheduled-tasks\\publish-fail-monitor' },
+          ],
+        }
+      }
+      return undefined
+    },
+  }
+  assert.equal(
+    await resolveCursorSlugPath(ctx, 'e-dev-suite-demo-Client-app'),
+    'E:\\dev-suite\\demo.Client-app',
+  )
+  assert.equal(
+    await resolveCursorSlugPath(ctx, 'e-dev-suite-scheduled-tasks-publish-fail-monitor'),
+    'E:\\dev-suite\\scheduled-tasks\\publish-fail-monitor',
+  )
+  assert.equal(await resolveCursorSlugPath(ctx, 'empty-window'), null)
+  assert.equal(await resolveCursorSlugPath(ctx, '1784784551097'), null)
+})
+
+test('greedyDecodeCursorSlugPath: 无 registry 时靠磁盘 . 还原（demo.Client-app）', async () => {
+  const tree = {
+    'E:\\dev-suite': 'dir',
+    'E:\\dev-suite\\demo.Client-app': 'dir',
+  }
+  const ctx = makeFsTree(tree)
+  assert.equal(
+    await greedyDecodeCursorSlugPath(ctx, 'e-dev-suite-demo-Client-app'),
+    'E:\\dev-suite\\demo.Client-app',
+  )
+})
+
+test('parseCursorEmbeddedTimestamp / stripCursorTitleDecorations', () => {
+  const raw = '<timestamp>Friday, Aug 7, 2026, 3:44 PM (UTC+8)</timestamp>\n<user_query>hello</user_query>'
+  const ts = parseCursorEmbeddedTimestamp(raw)
+  assert.ok(typeof ts === 'number' && ts > 0)
+  assert.equal(stripCursorTitleDecorations(raw), 'hello')
+  assert.equal(isCursorNonRepoSlug('empty-window'), true)
+  assert.equal(isCursorNonRepoSlug('1784784551097'), true)
+  assert.equal(isCursorNonRepoSlug('e-dev-suite-demo-Client-app'), false)
+})

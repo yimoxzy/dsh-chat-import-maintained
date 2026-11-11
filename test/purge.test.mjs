@@ -1,0 +1,335 @@
+// purge.test.mjs — 导入历史列表 + 批量撤回（删除本插件创建的会话）
+import { test, beforeEach } from 'node:test'
+import assert from 'node:assert/strict'
+import { writeFileSync, accessSync, mkdirSync, chmodSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { join } from 'node:path'
+import { registerPanelRoutes } from '../lib/panel.mjs'
+import {
+  resolveRegistryDir, rememberImport, loadImports,
+} from '../lib/imports.mjs'
+import {
+  listImportHistory, deleteImportedSession, purgeAllImports, collectRegistryTargets, clearSessionArtifactsForReplace,
+} from '../lib/purge.mjs'
+import { hostAbs } from './_support/host-path.mjs'
+import { makeCtx as makeHostCtx, makePersistence as makeHostPersistence } from './_support/fake-host.mjs'
+import { freshDshHome } from './_support/tmp-db.mjs'
+
+const T0 = 1710000000000
+
+beforeEach(() => {
+  process.env.DSH_HOME = freshDshHome('dsh-home-')
+})
+
+function markerEvent(sourcePath) {
+  return { type: 'session/imported', seq: 0, ignorable: true, data: { tool: 'import_chat', sourceId: 'x', sourcePath, importedAt: T0 } }
+}
+
+// 会话库：读面 + locate（会话工件目录 $DSH_HOME/sessions/_proj/<id>）。刻意没有 remove /
+// inspect 面：撤回只能真去删工件目录，不能靠宿主内存索引兜底。
+function makePersistence() {
+  return makeHostPersistence({
+    omit: ['remove', 'inspect'],
+    locate: (meta) => ({ kind: 'jsonl', path: join(process.env.DSH_HOME, 'sessions', '_proj', meta.id) }),
+  })
+}
+
+// 宿主服务按需注入：sessions / agents 服务、workspaceRegistry（缺省即宿主不提供该服务）。
+function makeCtx(persistence, { sessions, agents, workspaceRegistry } = {}) {
+  return makeHostCtx({}, { persistence, workspaceRegistry, services: { sessions, agents } }).ctx
+}
+
+test('listImportHistory：展平 single/multi registry 条目', async () => {
+  const dir = resolveRegistryDir()
+  await rememberImport(dir, 'D:\\a\\one.jsonl', {
+    kind: 'single', dshId: 'import-s1', turns: 2, events: 10, importedAt: T0,
+  })
+  await rememberImport(dir, 'D:\\b\\chat.json', {
+    kind: 'multi', importedAt: T0 + 1,
+    conversations: { c1: { dshId: 'import-c1', turns: 1, events: 5 } },
+  })
+  const persistence = makePersistence()
+  persistence.sessions.set('import-s1', { meta: { id: 'import-s1' }, events: [markerEvent('D:\\a\\one.jsonl')] })
+  persistence.sessions.set('import-c1', { meta: { id: 'import-c1' }, events: [markerEvent('D:\\b\\chat.json')] })
+  const ctx = makeCtx(persistence)
+  const out = await listImportHistory(ctx, dir)
+  assert.equal(out.total, 2)
+  assert.ok(out.entries.some((e) => e.sessionId === 'import-s1' && e.sourcePath === 'D:\\a\\one.jsonl'))
+  assert.ok(out.entries.some((e) => e.sessionId === 'import-c1'))
+  assert.equal(out.entries[0].importedAt, T0 + 1)
+})
+
+test('deleteImportedSession：删除工件 + 清 registry（仅本插件标记会话）', async () => {
+  const dir = resolveRegistryDir()
+  const sourcePath = 'D:\\demo\\sess.jsonl'
+  const sessionId = 'import-purge-001'
+  await rememberImport(dir, sourcePath, {
+    kind: 'single', dshId: sessionId, turns: 1, events: 6, importedAt: T0,
+  })
+  const persistence = makePersistence()
+  const artDir = join(process.env.DSH_HOME, 'sessions', '_proj', sessionId)
+  mkdirSync(artDir, { recursive: true })
+  writeFileSync(join(artDir, 'session.jsonl'), '{"type":"x"}\n')
+  persistence.sessions.set(sessionId, {
+    meta: { id: sessionId },
+    events: [markerEvent(sourcePath)],
+  })
+  const detached = []
+  const workspaceRegistry = {
+    list() {
+      return [{ path: 'D:\\agent-transcripts\\uuid-1', sessionIds: [sessionId], detachSession: async (id) => { detached.push(id) } }]
+    },
+  }
+  const ctx = makeCtx(persistence, { workspaceRegistry })
+  const out = await deleteImportedSession(ctx, dir, sessionId)
+  assert.equal(out.sessionId, sessionId)
+  assert.equal(out.workspaces, 1)
+  assert.deepEqual(detached, [sessionId])
+  const reg = await loadImports(dir)
+  assert.equal(Object.keys(reg.imports).length, 0)
+  let exists = true
+  try { accessSync(artDir); } catch { exists = false }
+  assert.equal(exists, false, '工件目录应已删除')
+})
+
+// 「rm 后仍存在」靠权限拒绝造：Linux 只读目录（unlink 要目录写权限）、Windows 只读文件。
+// 超级用户绕过权限位（root 容器 / root 身份跑测试），锁造不出来，删除必然成功——此时跳过；
+// 非 root 的 Linux 与 Windows 上照常真跑（本文件其余用例不受影响）。
+const rootSkipsPermissionLock = process.getuid?.() === 0
+
+test('deleteImportedSession：工件被占用（rm 后仍存在）→ 中止且 registry 保留', { skip: rootSkipsPermissionLock && 'root 绕开权限位，无法制造占用' }, async () => {
+  const dir = resolveRegistryDir()
+  const sourcePath = 'D:\\demo\\locked.jsonl'
+  const sessionId = 'import-locked-001'
+  await rememberImport(dir, sourcePath, {
+    kind: 'single', dshId: sessionId, turns: 1, events: 6, importedAt: T0,
+  })
+  const persistence = makePersistence()
+  const artDir = join(process.env.DSH_HOME, 'sessions', '_proj', sessionId)
+  mkdirSync(artDir, { recursive: true })
+  const artFile = join(artDir, 'session.jsonl')
+  writeFileSync(artFile, '{"type":"x"}\n')
+  // 跨平台真实锁：Windows 靠子进程占用 cwd（使用中的目录不可删，rimraf 的 chmod
+  // 重试也解不开），Linux 靠只读目录 / 只读文件（unlink 需要目录写权限；超级用户不受限，
+  // 故 root 下本用例跳过）
+  chmodSync(artDir, 0o555)
+  chmodSync(artFile, 0o444)
+  const child = spawn(process.execPath, ['-e', 'process.stdout.write("ready\\n"); setTimeout(() => {}, 5000)'], { cwd: artDir, stdio: ['ignore', 'pipe', 'ignore'] })
+  await new Promise((resolve) => child.stdout.once('data', resolve))
+  persistence.sessions.set(sessionId, {
+    meta: { id: sessionId },
+    events: [markerEvent(sourcePath)],
+  })
+  const ctx = makeCtx(persistence)
+  try {
+    await assert.rejects(() => deleteImportedSession(ctx, dir, sessionId), /工件删除失败/)
+    const reg = await loadImports(dir)
+    assert.ok(reg.imports[sourcePath], 'registry 必须保留，防幽灵会话')
+  } finally {
+    child.kill()
+    await once(child, 'exit')
+    try { chmodSync(artDir, 0o755) } catch { /* 目录若已被删则忽略 */ }
+    try { chmodSync(artFile, 0o644) } catch { /* 文件若已被删则忽略 */ }
+  }
+})
+
+test('deleteImportedSession：不在 imports registry 的会话拒绝删除（归属以 registry 为权威，issue #34）', async () => {
+  const dir = resolveRegistryDir()
+  const sessionId = 'native-sess'
+  const persistence = makePersistence()
+  persistence.sessions.set(sessionId, { meta: { id: sessionId }, events: [{ type: 'turn/start', seq: 0 }] })
+  const ctx = makeCtx(persistence)
+  await assert.rejects(() => deleteImportedSession(ctx, dir, sessionId), /不在 imports registry/)
+})
+
+test('deleteImportedSession：registry 命中即可删除，日志无标记不阻断（0.8.3+ 导出无标记，issue #34）', async () => {
+  const dir = resolveRegistryDir()
+  const sessionId = 'import-no-marker'
+  await rememberImport(dir, 'D:\\x.jsonl', { kind: 'single', dshId: sessionId, turns: 1, events: 1, importedAt: T0 })
+  const persistence = makePersistence()
+  persistence.sessions.set(sessionId, { meta: { id: sessionId }, events: [{ type: 'turn/start', seq: 0 }] })
+  const ctx = makeCtx(persistence)
+  const out = await deleteImportedSession(ctx, dir, sessionId)
+  assert.equal(out.sessionId, sessionId)
+  const reg = await loadImports(dir)
+  assert.equal(Object.keys(reg.imports).length, 0)
+})
+
+test('purgeAllImports：需 confirm；批量删除 registry 全部会话', async () => {
+  const dir = resolveRegistryDir()
+  const ids = ['import-a', 'import-b']
+  for (const [i, id] of ids.entries()) {
+    const sp = 'D:\\s' + i + '.jsonl'
+    await rememberImport(dir, sp, { kind: 'single', dshId: id, turns: 1, events: 1, importedAt: T0 + i })
+  }
+  const persistence = makePersistence()
+  for (const [i, id] of ids.entries()) {
+    const artDir = join(process.env.DSH_HOME, 'sessions', '_proj', id)
+    mkdirSync(artDir, { recursive: true })
+    writeFileSync(join(artDir, 'session.jsonl'), 'x\n')
+    persistence.sessions.set(id, { meta: { id }, events: [markerEvent('D:\\s' + i + '.jsonl')] })
+  }
+  const ctx = makeCtx(persistence)
+  await assert.rejects(() => purgeAllImports(ctx, dir, {}), /confirm/)
+  const out = await purgeAllImports(ctx, dir, { confirm: true })
+  assert.equal(out.total, 2)
+  assert.equal(out.deleted, 2)
+  assert.equal(out.failed, 0)
+  const reg = await loadImports(dir)
+  assert.equal(Object.keys(reg.imports).length, 0)
+})
+
+test('面板路由：/api-import/history + /api-import/purge 注册并可调用', async () => {
+  const { ctx, webRoutes } = makeHostCtx({}, { persistence: makePersistence() })
+  registerPanelRoutes(ctx, ctx.webServer, resolveRegistryDir())
+  const history = webRoutes.find((r) => r.path === '/api-import/history')
+  const purge = webRoutes.find((r) => r.path === '/api-import/purge')
+  assert.ok(history)
+  assert.ok(purge)
+  const dir = resolveRegistryDir()
+  await rememberImport(dir, 'D:\\z.jsonl', { kind: 'single', dshId: 'import-z', turns: 1, events: 1, importedAt: T0 })
+  let body = ''
+  const res = { writeHead() {}, end(s) { body = s } }
+  await history.handler({ async *[Symbol.asyncIterator]() { yield '{}' } }, res)
+  const hist = JSON.parse(body)
+  assert.equal(hist.ok, true)
+  assert.equal(hist.total, 1)
+})
+
+test('assertPluginSession / clearSessionArtifactsForReplace：支持带下划线的合法 sessionId（如 import-foo_bar）', async () => {
+  const dir = resolveRegistryDir()
+  const sourcePath = 'D:\\kimi\\wire.jsonl'
+  const sessionId = 'import-my_special_session-123'
+  await rememberImport(dir, sourcePath, {
+    kind: 'single', dshId: sessionId, turns: 1, events: 1, importedAt: T0,
+  })
+  const persistence = makePersistence()
+  const artDir = join(process.env.DSH_HOME, 'sessions', '_proj', sessionId)
+  mkdirSync(artDir, { recursive: true })
+  writeFileSync(join(artDir, 'session.jsonl'), '{"type":"x"}\n')
+  persistence.sessions.set(sessionId, {
+    meta: { id: sessionId },
+    events: [markerEvent(sourcePath)],
+  })
+  const ctx = makeCtx(persistence)
+  const res = await deleteImportedSession(ctx, dir, sessionId)
+  assert.equal(res.sessionId, sessionId)
+})
+
+test('clearSessionArtifactsForReplace：清除旧工件并保留导入记录和工作区挂接', async () => {
+  const dir = resolveRegistryDir()
+  const sourcePath = hostAbs('D:/demo/replace.jsonl')
+  const sessionId = 'import-replace-001'
+  await rememberImport(dir, sourcePath, {
+    kind: 'single', dshId: sessionId, turns: 1, events: 6, importedAt: T0,
+  })
+  const persistence = makePersistence()
+  const artDir = join(process.env.DSH_HOME, 'sessions', '_proj', sessionId)
+  mkdirSync(artDir, { recursive: true })
+  writeFileSync(join(artDir, 'session.jsonl'), '{"type":"x"}\n')
+  const detached = []
+  const removed = []
+  persistence.remove = async (id) => { removed.push(id) }
+  const workspace = { path: hostAbs('D:/demo'), sessionIds: [sessionId] }
+  const ctx = makeCtx(persistence, {
+    sessions: { store: new Map([[sessionId, { detach: () => { detached.push(sessionId) } }]]) },
+    workspaceRegistry: { list: () => [workspace] },
+  })
+  const out = await clearSessionArtifactsForReplace(ctx, sessionId)
+  assert.deepEqual(out, { sessionId, files: 1 })
+  assert.throws(() => accessSync(artDir), { code: 'ENOENT' })
+  assert.deepEqual(detached, [sessionId])
+  assert.deepEqual(removed, [sessionId])
+  assert.equal((await loadImports(dir)).imports[sourcePath].dshId, sessionId)
+  assert.deepEqual(workspace.sessionIds, [sessionId])
+})
+
+test('collectRegistryTargets：multi 子表展开', () => {
+  const targets = collectRegistryTargets({
+    a: { kind: 'single', dshId: 's1' },
+    b: { kind: 'multi', conversations: { x: { dshId: 's2' } }, sessions: { y: { dshId: 's3' } } },
+  })
+  assert.deepEqual(targets.map((t) => t.sessionId).sort(), ['s1', 's2', 's3'])
+})
+
+test('collectRegistryTargets：重导另铸的历史副本一并展开（清理也要管到它们）', () => {
+  const targets = collectRegistryTargets({
+    a: { kind: 'single', dshId: 's1-1', copies: [{ dshId: 's1' }] },
+    b: { kind: 'multi', conversations: { x: { dshId: 's2', copies: [{ dshId: 's2-old' }] } } },
+  })
+  assert.deepEqual(targets.map((t) => t.sessionId).sort(), ['s1', 's1-1', 's2', 's2-old'])
+})
+
+test('删除重导副本：只摘掉这一条，主记录与其它副本留在 registry（不连带失账）', async () => {
+  const dir = resolveRegistryDir()
+  const sourcePath = hostAbs('D:/demo/a.jsonl')
+  const persistence = makePersistence()
+  for (const id of ['copy-keep', 'copy-drop', 'main-keep']) {
+    persistence.sessions.set(id, { meta: { id }, events: [markerEvent(sourcePath)] })
+    mkdirSync(join(process.env.DSH_HOME, 'sessions', '_proj', id), { recursive: true })
+    writeFileSync(join(process.env.DSH_HOME, 'sessions', '_proj', id, 'session.jsonl'), '{"type":"x"}\n')
+  }
+  await rememberImport(dir, sourcePath, {
+    kind: 'single',
+    dshId: 'main-keep',
+    turns: 3,
+    events: 9,
+    importedAt: T0,
+    copies: [{ dshId: 'copy-drop', turns: 2, events: 6 }, { dshId: 'copy-keep', turns: 1, events: 3 }],
+  })
+  const ctx = makeCtx(persistence)
+  const res = await deleteImportedSession(ctx, dir, 'copy-drop')
+  assert.equal(res.sessionId, 'copy-drop')
+  const reg = await loadImports(dir)
+  const rec = reg.imports[sourcePath]
+  assert.equal(rec.dshId, 'main-keep')
+  assert.deepEqual(rec.copies.map((c) => c.dshId), ['copy-keep'])
+})
+
+test('删除主记录：把最新副本提升为主记录，其余副本保留（会话还在，账也还在）', async () => {
+  const dir = resolveRegistryDir()
+  const sourcePath = hostAbs('D:/demo/b.jsonl')
+  const persistence = makePersistence()
+  for (const id of ['main-drop', 'copy-new', 'copy-old']) {
+    persistence.sessions.set(id, { meta: { id }, events: [markerEvent(sourcePath)] })
+    mkdirSync(join(process.env.DSH_HOME, 'sessions', '_proj', id), { recursive: true })
+    writeFileSync(join(process.env.DSH_HOME, 'sessions', '_proj', id, 'session.jsonl'), '{"type":"x"}\n')
+  }
+  await rememberImport(dir, sourcePath, {
+    kind: 'single',
+    dshId: 'main-drop',
+    turns: 4,
+    events: 12,
+    importedAt: T0,
+    copies: [{ dshId: 'copy-new', turns: 3, events: 9, importedAt: T0 + 1 }, { dshId: 'copy-old', turns: 2, events: 6, importedAt: T0 }],
+  })
+  const ctx = makeCtx(persistence)
+  await deleteImportedSession(ctx, dir, 'main-drop')
+  const reg = await loadImports(dir)
+  const rec = reg.imports[sourcePath]
+  assert.equal(rec.dshId, 'copy-new')
+  assert.equal(rec.turns, 3)
+  assert.deepEqual(rec.copies.map((c) => c.dshId), ['copy-old'])
+})
+
+test('删除会话修剪 registry 走串行读-改-写：与之并发的其它导入记录不被整表覆盖吞掉', async () => {
+  const registryDir = resolveRegistryDir()
+  await rememberImport(registryDir, 'D:/src/multi.db', {
+    kind: 'multi',
+    sessions: { a: { dshId: 'import-a', turns: 1, events: 2 }, b: { dshId: 'import-b', turns: 1, events: 2 } },
+    importedAt: T0,
+  })
+  const ctx = { get: (name) => (name === 'sessionPersistence' ? {} : undefined) }
+  const deletion = deleteImportedSession(ctx, registryDir, 'import-a')
+  // 删除进行中，另一个入口逐条写入各自的记录（与修剪交错在同一条写链上）
+  for (let i = 0; i < 30; i++) {
+    await rememberImport(registryDir, 'D:/src/other-' + i + '.jsonl', { kind: 'single', dshId: 'import-o' + i, turns: 1, events: 2, importedAt: T0 })
+  }
+  await deletion
+  const { imports } = await loadImports(registryDir)
+  const lost = []
+  for (let i = 0; i < 30; i++) if (!imports['D:/src/other-' + i + '.jsonl']) lost.push(i)
+  assert.deepEqual(lost, [], '并发写入的记录全部保留')
+  assert.deepEqual(Object.keys(imports['D:/src/multi.db'].sessions), ['b'])
+})

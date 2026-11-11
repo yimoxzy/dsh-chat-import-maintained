@@ -1,0 +1,97 @@
+// tools-injection.test.mjs — 工具注入档位（injectTools）契约：
+// registerTools 默认注入 12 个工具并返回 reconcile；reconcile 三档对账——
+// 'off'/false 注销全部、'minimal' 仅注入 import_chat 入口、'full'/true 重注册全部，
+// 且 IMPORT_SPECS（面板/命令依赖）恒被填充、与注入档位无关。
+// 另含描述长度护栏：工具常驻上下文成本（description + parameters）不得回肥。
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { registerTools } from '../lib/tools.mjs'
+import { IMPORT_SPECS } from '../lib/toolkit.mjs'
+import { makeCtx } from './_support/fake-host.mjs'
+
+test('registerTools：默认注入 12 个工具，IMPORT_SPECS 恒填充', () => {
+  const { ctx, registered, active } = makeCtx()
+  const reconcile = registerTools(ctx, '.tools-injection-test')
+  assert.equal(typeof reconcile, 'function')
+  assert.equal(registered.length, 12)
+  assert.equal(active(), 12)
+  // IMPORT_SPECS 在注册期即被 makeImportChatTool 填充（面板 POST /api-import/import 与
+  // /import 命令依赖），与工具是否注入无关——即使注入关闭也照常可用
+  assert.ok(IMPORT_SPECS.has('claude'), 'IMPORT_SPECS 应登记 claude 面板来源')
+})
+
+test("reconcile('off')：注销全部工具，IMPORT_SPECS 原样保留；幂等", () => {
+  const toolCtx = makeCtx()
+  const reconcile = registerTools(toolCtx.ctx, '.tools-injection-test')
+  reconcile('off')
+  assert.equal(toolCtx.active(), 0)
+  assert.ok(IMPORT_SPECS.has('claude'), '注销工具不得清空 IMPORT_SPECS')
+  // 幂等：重复 off 不重复注销、不抛错
+  reconcile('off')
+  assert.equal(toolCtx.active(), 0)
+})
+
+test("reconcile('minimal')：仅注入 import_chat 入口，其余 11 个不占常驻上下文", () => {
+  const toolCtx = makeCtx()
+  const reconcile = registerTools(toolCtx.ctx, '.tools-injection-test')
+  reconcile('minimal')
+  assert.equal(toolCtx.active(), 1)
+  assert.ok(IMPORT_SPECS.has('claude'), 'minimal 档 IMPORT_SPECS 原样保留')
+  // 幂等：重复 minimal 不重复注册
+  reconcile('minimal')
+  assert.equal(toolCtx.active(), 1)
+  // minimal → off → minimal 往返
+  reconcile('off')
+  assert.equal(toolCtx.active(), 0)
+  reconcile('minimal')
+  assert.equal(toolCtx.active(), 1)
+})
+
+test("reconcile('full')：重注册全部 12 个；三档往返与历史 boolean 兼容", () => {
+  const toolCtx = makeCtx()
+  const reconcile = registerTools(toolCtx.ctx, '.tools-injection-test')
+  // minimal → full：注册集合从 1 回到 12
+  reconcile('minimal')
+  reconcile('full')
+  assert.equal(toolCtx.active(), 12)
+  reconcile('full')
+  assert.equal(toolCtx.active(), 12)
+  // 历史 boolean 兼容：true = 'full'，false = 'off'
+  reconcile(false)
+  assert.equal(toolCtx.active(), 0)
+  reconcile(true)
+  assert.equal(toolCtx.active(), 12)
+  // 注册次数累计：初始 12 + minimal 1 + full 12 + full 12 + full(true) 12 = 49
+  //（注销只减 active，不清 registered 记录）
+  assert.equal(toolCtx.registered.length, 49)
+})
+
+test('描述长度护栏：每个工具 description ≤ 500 字符，全量档常驻 payload ≤ 12k 字符', () => {
+  const defs = []
+  const measuringCtx = {
+    tools: {
+      register(def) { defs.push(def); return () => {} },
+    },
+    get() { return undefined },
+  }
+  registerTools(measuringCtx, '.tools-guard-test')
+  // 常驻上下文成本 = 工具级 description + 参数级 description 之和（模型按此付费）。
+  // 回肥护栏：细化行为说明请下沉到 docs/IMPORT-GUIDE.md（运行时 skill 按需加载）或
+  // 执行结果 / 错误文本（按需付费），而非膨胀 schema。
+  let total = 0
+  for (const def of defs) {
+    const desc = (def.description || '').length
+    const params = JSON.stringify(def.parameters || {}).length
+    total += desc + params
+    assert.ok(desc <= 500, `工具 ${def.name} description ${desc} 字符超过 500 上限（本次瘦身基线）`)
+  }
+  assert.equal(defs.length, 12)
+  // import_chat 是唯一常驻（minimal 档）的工具，单独钉住：29 个来源的 path 形状表与参数长文
+  // 已下沉到指南，schema 只剩枚举、必填项与「调用必需」的一行说明（≈2.7k 字符）。
+  const importChat = defs.find((d) => d.name === 'import_chat')
+  const importChatSize = importChat.description.length + JSON.stringify(importChat.parameters).length
+  assert.ok(importChatSize <= 2850, `import_chat 常驻 ${importChatSize} 字符超过 2850 上限（下沉后基线 ≈2.7k；34 来源 = 2820，新增一源只该多两行枚举 ≈24 字符）`)
+  // 上限随来源数量走：新增来源只该多一行枚举（≈12 字符）与 spec 派生的名单，不该多一段说明。
+  // 下沉前基线 ≈15.3k，下沉后 ≈11.3k；12k 给后续来源留了余量，同时挡住「说明回填 schema」。
+  assert.ok(total <= 12000, `全量档 payload ${total} 字符超过 12000 上限（下沉后基线 ≈11.3k）`)
+})

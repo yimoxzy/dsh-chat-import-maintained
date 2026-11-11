@@ -1,0 +1,106 @@
+// test/source-derive.test.mjs — 文件型来源的旁读派生（lib/tools/source-derive.mjs）
+//
+// mock fs 按**精确路径**查找（不做分隔符归一）：这里要守的正是「派生出的旁路文件路径
+// 在本平台真实可达」，归一化查找会把拼错分隔符的路径也判成命中。
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { join } from 'node:path'
+import { reasonixDesktopLayout, reasonixDeriveArgs, cursorDeriveArgs, fileStem } from '../lib/tools/source-derive.mjs'
+import { clearWorkspacePathCache } from '../lib/cwd-map.mjs'
+import { cursorWorkspaceFixture } from './_support/cursor.mjs'
+import { openSqliteFixture, withTempDirAsync } from './_support/tmp-db.mjs'
+import { readCursorComposerWorkspaces } from '../lib/sources/cursor.mjs'
+
+function exactFs(files) {
+  return {
+    async resolve(path) { return { targetKey: path, displayPath: path } },
+    async stat(target) {
+      const v = files[target.targetKey]
+      return v === undefined ? undefined : { type: 'file', size: v.length }
+    },
+    async readText(target) {
+      const v = files[target.targetKey]
+      if (v === undefined) throw new Error('ENOENT ' + target.targetKey)
+      return v
+    },
+    async listDir() { return [] },
+    processPath(target) { return target.targetKey },
+  }
+}
+
+test('reasonixDesktopLayout：sessions 目录原样截取输入前缀（不改分隔符）', () => {
+  assert.deepEqual(reasonixDesktopLayout('/home/u/.reasonix/projects/my-slug/sessions/abc.jsonl'),
+    { slug: 'my-slug', sessionsDir: '/home/u/.reasonix/projects/my-slug/sessions' })
+  assert.deepEqual(reasonixDesktopLayout('C:\\Users\\u\\.reasonix\\projects\\my-slug\\sessions\\abc.jsonl'),
+    { slug: 'my-slug', sessionsDir: 'C:\\Users\\u\\.reasonix\\projects\\my-slug\\sessions' })
+  assert.equal(reasonixDesktopLayout('/home/u/.reasonix/sessions/abc.jsonl'), null)
+})
+
+test('reasonixDeriveArgs：桌面版布局从本平台可达的 .titles.json 取标题', async () => {
+  const file = '/home/u/.reasonix/projects/my-slug/sessions/abc.jsonl'
+  const titles = join('/home/u/.reasonix/projects/my-slug/sessions', '.titles.json')
+  const ctx = { fs: exactFs({ [file]: '', [titles]: JSON.stringify({ abc: '  桌面版标题 ' }) }) }
+  const derived = await reasonixDeriveArgs(ctx, { targetKey: file, displayPath: file })
+  assert.equal(derived.reasonixId, 'abc')
+  assert.equal(derived.title, '桌面版标题')
+})
+
+test('reasonixDeriveArgs：.titles.json 损坏时告警并回退首问，不静默吞掉', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {})
+  const file = '/home/u/.reasonix/projects/my-slug/sessions/abc.jsonl'
+  const titles = join('/home/u/.reasonix/projects/my-slug/sessions', '.titles.json')
+  const ctx = { fs: exactFs({ [file]: '', [titles]: '{broken' }) }
+  const derived = await reasonixDeriveArgs(ctx, { targetKey: file, displayPath: file })
+  assert.equal(derived.title, undefined)
+  assert.equal(warn.mock.callCount(), 1)
+  assert.match(String(warn.mock.calls[0].arguments[0]), /\.titles\.json/)
+})
+
+test('reasonixDeriveArgs：没有 .titles.json 是常态，不告警', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {})
+  const file = '/home/u/.reasonix/projects/my-slug/sessions/abc.jsonl'
+  const derived = await reasonixDeriveArgs({ fs: exactFs({ [file]: '' }) }, { targetKey: file, displayPath: file })
+  assert.equal(derived.title, undefined)
+  assert.equal(warn.mock.callCount(), 0)
+})
+
+test('cursorDeriveArgs：composer 登记覆盖旧 slug，缺登记仍解码 slug', async () => {
+  await withTempDirAsync('cursor-derive-', async (root) => {
+    clearWorkspacePathCache()
+    const cwd = join(root, 'moved-project')
+    const fallback = 'E:\\demo'
+    const { ctx } = cursorWorkspaceFixture(root, {
+      rows: [{ composerId: 'registered', value: JSON.stringify({ workspaceIdentifier: { uri: { fsPath: cwd } } }) }],
+      tree: { [cwd]: 'dir', [fallback]: 'dir' },
+    })
+    const target = (id) => ({ displayPath: join(root, 'projects', 'e-demo', 'agent-transcripts', id, id + '.jsonl') })
+    assert.deepEqual(await cursorDeriveArgs(ctx, target('registered')), { cursorId: 'registered', cwd })
+    assert.deepEqual(await cursorDeriveArgs(ctx, target('missing')), { cursorId: 'missing', cwd: fallback })
+  })
+})
+
+test('cursorDeriveArgs：导入忽略发现缓存，即使 DB/WAL 指纹不变也重新读取', async (t) => {
+  await withTempDirAsync('cursor-fresh-import-', async (root) => {
+    const old = join(root, 'old-project')
+    const cwd = join(root, 'moved-project')
+    const value = (fsPath) => JSON.stringify({ workspaceIdentifier: { uri: { fsPath } } })
+    const { ctx, dbPath } = cursorWorkspaceFixture(root, {
+      rows: [{ composerId: 'session', value: value(old) }], tree: { [old]: 'dir', [cwd]: 'dir' },
+    })
+    const stat = ctx.fs.stat
+    t.mock.method(ctx.fs, 'stat', async (target) => target.targetKey === dbPath
+      ? { type: 'file', size: 1, mtimeMs: 1 }
+      : target.targetKey === dbPath + '-wal' ? null : stat(target))
+    assert.equal((await readCursorComposerWorkspaces(ctx)).get('session'), old)
+    const db = openSqliteFixture(dbPath)
+    try { db.prepare('UPDATE composerHeaders SET value = ?').run(value(cwd)) } finally { db.close() }
+    const target = { displayPath: join(root, 'projects', 'empty-window', 'agent-transcripts', 'session', 'session.jsonl') }
+    assert.deepEqual(await cursorDeriveArgs(ctx, target), { cursorId: 'session', cwd })
+  })
+})
+
+test('fileStem：去掉目录与扩展名（两种分隔符）', () => {
+  assert.equal(fileStem('/a/b/sess-1.jsonl'), 'sess-1')
+  assert.equal(fileStem('C:\\a\\b\\sess-2.jsonl'), 'sess-2')
+  assert.equal(fileStem('/a/b/s.json', /\.json$/i), 's')
+})
