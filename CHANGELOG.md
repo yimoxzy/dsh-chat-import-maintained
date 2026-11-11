@@ -2,6 +2,20 @@
 
 All notable changes to `dsh-chat-import` are documented here, newest first.
 
+## [0.27.0-maintained.2] - 2026-11-11
+
+[中文](#cn-0.27.0-maintained.2) | [English](#en-0.27.0-maintained.2)
+
+<h3 id="cn-0.27.0-maintained.2">问题修复</h3>
+
+- 修正 bundle patch 的模块名：维护包启用后实际加载 `dsh-chat-import-maintained`，不再解析到仍安装的上游 `dsh-chat-import`。增加包身份回归测试，覆盖独立包名、入口和项目工具接线。
+
+<h3 id="en-0.27.0-maintained.2">Bug Fixes</h3>
+
+- Resolve the maintained module from the bundle patch instead of an installed upstream package. Add an entry-point identity regression test.
+
+**Full Changelog**: [v0.27.0-maintained.1...v0.27.0-maintained.2](https://github.com/yimoxzy/dsh-chat-import-maintained/compare/v0.27.0-maintained.1...v0.27.0-maintained.2)
+
 ## [0.27.0-maintained.1] - 2026-11-11
 
 [中文](#cn-0.27.0-maintained.1) | [English](#en-0.27.0-maintained.1)
