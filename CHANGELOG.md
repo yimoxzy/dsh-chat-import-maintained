@@ -2,6 +2,34 @@
 
 All notable changes to `dsh-chat-import` are documented here, newest first.
 
+## [0.28.0-maintained.1] - 2026-11-13
+
+[中文](#cn-0.28.0-maintained.1) | [English](#en-0.28.0-maintained.1)
+
+<h3 id="cn-0.28.0-maintained.1">新增功能</h3>
+
+- Codex 统一到普通“导入”页的来源选择，取消重复项目页。选择 Codex 时使用 SQLite/JSONL 项目扫描和只读迁移计划；直接文件/JSONL 及全部来源扫描继续使用上游通用路径。
+- 计划逐条分类 `new`、`unchanged`、`adoptable`、`update`、`conflict`、`ambiguous`、`missing`，扫描及预览不写账本或消息。唯一且完整核验的旧导入可在明确导入时仅登记账本，保留现有对话及续聊。
+- 已知源轮次只增不改且目标消息 atom 基线未变化时，可安全向同一会话追加新增轮次或标题元数据。冷目标使用独占写租约重读校验；已加载目标经原生预检后在当前空闲 Session 的同步追加段中再次验证身份和完整日志。
+
+### 问题修复
+
+- 认领依据精确源 ID、旧注册表/来源文档或可选迁移清单，以及 cwd/工作区归属和完整内容前缀，避免按同名会话误认。归档重复副本排除在外；多条活动候选或证据不足即使 force 也拒绝。
+- DSH 续聊、源历史改写或无法证明旧迁移轮次边界时明确报告冲突，只有点击导入才生成完整副本。缺失正文不创建空会话；缺失源目录仅在已核验保留工作区证据成立时复用，否则要求映射到现有目录。
+
+<h3 id="en-0.28.0-maintained.1">New Features</h3>
+
+- Unify Codex in the normal Import tab's source selector and remove the duplicate project tab. Selected Codex uses SQLite/JSONL project discovery and read-only planning; direct files/JSONL and all-source scans keep the upstream generic paths.
+- Classify each source as `new`, `unchanged`, `adoptable`, `update`, `conflict`, `ambiguous` or `missing`. Scan and preview write no ledger or messages. Explicit import may adopt one completely verified legacy target by recording its baseline without adding conversation messages.
+- Append source growth or title metadata to the same target only with a proven source-turn prefix and unchanged target atoms. Cold targets use an exclusive lease and re-read guard; live targets use native preflight and identity/whole-log/idle checks immediately before synchronous public Session appends.
+
+### Bug Fixes
+
+- Recognize legacy imports through exact source IDs, registry/source documents or an optional migration manifest, verified cwd/workspace evidence and complete content prefixes; never match by names. Exclude archived duplicates and refuse multiple or unverifiable active matches even with force.
+- Report DSH continuation, rewritten source history and unproven legacy append boundaries as conflicts; only an import click creates a full copy. Missing bodies do not create empty sessions. Reuse a moved project's retained directory only with verified membership evidence; otherwise require an existing remap destination.
+
+**Full Changelog**: [v0.27.0-maintained.2...v0.28.0-maintained.1](https://github.com/yimoxzy/dsh-chat-import-maintained/compare/v0.27.0-maintained.2...v0.28.0-maintained.1)
+
 ## [0.27.0-maintained.2] - 2026-11-11
 
 [中文](#cn-0.27.0-maintained.2) | [English](#en-0.27.0-maintained.2)

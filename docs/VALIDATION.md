@@ -1,28 +1,38 @@
 # Maintained release validation
 
-Release: `dsh-chat-import-maintained@0.27.0-maintained.1`.
+Current release under validation: `dsh-chat-import-maintained@0.28.0-maintained.1`.
 
-## Automated checks
+The unified release has passed a running DSH 0.2.2-rc.1 synthetic integration: read-only preview, complete initial import, unchanged skip, same-target append-only source update, two-sided continuation conflict copy, and no-duplicate adoption into an empty ledger. Long 20,000-character prompts, 60,000-character tool results and exact 100-byte titles survived; native checkpoint prices, projections and actual lists were verified. Both synthetic sessions were archived and the temporary helper removed. No real conversations were updated by this test.
 
-- Full Node.js test suite: **1811 passed, 0 failed, 0 skipped** on Node.js 24.18.0, Windows.
-- ESLint, cross-platform path policy, relative documentation links, source test anchors, sensitive-content scan and package build checks pass.
-- New source fixtures are synthetic SQLite databases and JSONL. No real chat bodies or credentials are committed.
-- Native invariant tests additionally use the installed matching DSH session formatter and estimator when peers are available.
+A read-only check of local project history classified 157 source records as 153 verified adoptable, one safe source update, one ambiguous history, one new conversation and one missing body, with no verification failures. These counts describe that local snapshot rather than a universal fixture. Current automated result: **1,851 tests passed, zero failures and zero skips** on Node.js 24.18.0/Windows. ESLint, cross-platform paths and all source test anchors passed. The developer peer-link initializer was additionally planned against the installed DSH runtime without changing links.
 
-## Running DSH integration
+## Current release validation scope
 
-A temporary test-only bundle called this checkout's migration pipeline inside DSH `0.2.2-rc.1`. It generated an isolated synthetic Codex home and ledger, using an existing workspace without changing its name. It verified:
+The unified Import-tab Codex source and tool share read-only planning and explicit execution. Synthetic coverage should verify:
 
-1. Preview creates no DSH sessions or ledger and leaves source data unchanged.
-2. A 20,000-character prompt, 60,000-character tool output and 100-byte title survive import exactly.
-3. Tool lifecycles are valid, checkpoint prices match the running native estimator, and native projections have nonnegative token counts.
-4. The actual native session list returns the session and exact title; the migration sends its list update notification.
-5. An unchanged import skips the existing target.
-6. A synthetic source update creates a distinct new target and preserves the old target's complete record and ledger mapping.
-7. Source snapshots remain unchanged by importing. The two test sessions were archived using the native service, and the temporary helper was removed.
+- No duplicate project tab; selecting Codex uses modern project discovery while direct file/JSONL and all-source paths preserve generic upstream handling.
+- Seven classifications: `new`, `unchanged`, `adoptable`, `update`, `conflict`, `ambiguous`, `missing`.
+- Scan/planning does not write a ledger, append messages or create DSH sessions.
+- A unique legacy mapping requires exact source identity, cwd/workspace evidence and complete prior-source content prefix; matching titles alone are insufficient. Archived duplicates are excluded, multiple active matches are refused and force cannot bypass ambiguity.
+- Clicking import adopts an identical verified legacy target without adding conversation messages and records any existing DSH continuation.
+- Append-only source growth updates the same verified target only when previous source-turn hashes are a prefix and target atoms remain unchanged. Cold-writer lease rechecks and live-Session identity/hash/idle checks reject concurrent changes; prior events remain intact.
+- Metadata-only updates append title metadata through the same guarded writer path. DSH continuation, edited historical source turns and unverifiable legacy append boundaries produce a conflict copy only on explicit import.
+- Missing source directories require a remap unless exact adoption evidence proves a unique retained workspace; the plugin creates no empty replacement project directory.
+- Full long texts and tool results, native lifecycle declarations, checkpoint token pricing, exact names, project membership, native projection and actual session-list/notification results remain valid.
 
-The integration report is a local development artifact outside this repository. This document records checks performed, not a claim that every DSH version, every database schema, or every browser theme has been tested. The server list/notification check does not observe a browser DOM acknowledgement.
+All source fixtures must be synthetic. Native formatter/estimator integration tests require matching installed peers. Server list and notification verification does not by itself prove a browser has received or rendered its DOM update.
 
-## Read-only real metadata check
+## Historical baseline: 0.27.0-maintained.1
 
-The local scanner found 36 projects and 156 project-associated entries: 155 with readable bodies and one without a body, matching the previously audited migration metadata. Only counts were recorded; no real data was imported by this check or included in test fixtures.
+The earlier independent project-entry release completed 1,811 Node.js tests with no failures or skips on Node.js 24.18.0, Windows. ESLint, path policy, documentation links, source test anchors, sensitive-content scan and package build checks passed for that release. Its test-only DSH `0.2.2-rc.1` integration checked:
+
+1. Read-only preview created no native session or ledger.
+2. A 20,000-character prompt, 60,000-character tool result and 100-byte original title survived import.
+3. Native tool lifecycles, exact checkpoint pricing and nonnegative token projections were valid.
+4. The real session-list API returned the target and title and received its list notification.
+5. Unchanged sources skipped; source growth used a distinct copy under that older release's policy and preserved the first record.
+6. Source snapshots were unchanged by importing; the two synthetic sessions were archived and the temporary helper was removed.
+
+These historical checks do not validate the new in-place append policy. The old copy-on-every-change behavior has been superseded.
+
+A historical read-only local metadata check found 36 projects and 156 associated entries, 155 with bodies and one without. Later source changes can alter these counts. No real conversation bodies or credentials were included in committed fixtures.

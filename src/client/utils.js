@@ -141,7 +141,7 @@
     }
 
     function fmtImportResult(results, t) {
-      const c = { imported: 0, replaced: 0, reimported: 0, already: 0, appended: 0, skipped: 0, ignored: 0, failed: 0, images: 0, imagesDegraded: 0, ungrouped: 0, workspaceCreated: 0 };
+      const c = { imported: 0, adopted: 0, updated: 0, replaced: 0, reimported: 0, already: 0, appended: 0, skipped: 0, ignored: 0, failed: 0, images: 0, imagesDegraded: 0, ungrouped: 0, workspaceCreated: 0 };
       for (const r of results || []) {
         if (r.status === "failed") { c.failed++; continue; }
         c.images += r.images || 0;
@@ -151,6 +151,8 @@
         if (r.workspaceCreated) c.workspaceCreated++;
         if (r.mode === "batch") {
           c.imported += r.imported || 0;
+          c.adopted += r.adopted || 0;
+          c.updated += r.updated || 0;
           c.reimported += r.reimported || 0;
           c.already += r.alreadyImported || 0;
           c.appended += r.appended || 0;
@@ -160,7 +162,9 @@
         } else if (r.status === "imported") {
           if (r.reimported) c.reimported++;
           else c.imported++;
-        } else if (r.status === "replaced") c.replaced++;
+        } else if (r.status === "adopted") c.adopted++;
+        else if (r.status === "updated") c.updated++;
+        else if (r.status === "replaced") c.replaced++;
         else if (r.status === "already-imported") c.already++;
         else if (r.status === "appended") c.appended++;
         else if (r.status === "ignored") c.ignored++;
@@ -168,6 +172,8 @@
       }
       const bits = [];
       if (c.imported) bits.push(t("result.imported", { n: c.imported }));
+      if (c.adopted) bits.push(t("result.adopted", { n: c.adopted }));
+      if (c.updated) bits.push(t("result.updated", { n: c.updated }));
       if (c.reimported) bits.push(t("result.reimported", { n: c.reimported }));
       if (c.replaced) bits.push(t("result.replaced", { n: c.replaced }));
       if (c.appended) bits.push(t("result.appended", { n: c.appended }));

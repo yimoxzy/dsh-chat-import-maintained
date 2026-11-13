@@ -80,10 +80,10 @@
         sourceLabel(s.format),
         ctxTok ? t("count.contextTokens", { n: ctxTok }) : null,
         s.gitBranch ? s.gitBranch + (s.gitDirty ? " ✗" : "") : null,
-        statusLabel(s.importStatus, t),
+        codexMigrationActionLabel(s, t) || statusLabel(s.importStatus, t),
         fmtTime(s.lastActiveAt || s.createdAt),
       ].filter(Boolean).join(" · ");
-      return (s.title || t("noTitle")) + (meta ? "\n" + meta : "");
+      return (s.title || t("noTitle")) + (meta ? "\n" + meta : "") + (codexMigrationTip(s, t) ? "\n" + codexMigrationTip(s, t) : "");
     }
 
     /** 行的点亮态 { key, group }（悬停或行内按钮聚焦；组头随所在分组一起变亮）。进入（key
@@ -370,7 +370,8 @@
         h("div", { style: style.itemMain },
           h("div", {
             style: { ...style.itemTitle, ...(lit ? style.itemTitleActive : null) },
-          }, h(Highlight, { text: s.title || props.noTitle, terms }))),
+          }, h(CodexMigrationBadge, { session: s, t: props.t }),
+          h(Highlight, { text: s.title || props.noTitle, terms }))),
         h("div", { style: style.rowSlot },
           hot || !hit ? null : h("span", { style: TOOL_STYLES.hits }, props.hitLabel),
           hot ? null : h("span", { style: style.rowTime }, time),
@@ -434,6 +435,7 @@
           onToggle,
           onImport,
           onHot,
+          t,
           noTitle: t("noTitle"),
           multiSelectTitle: t("multiSelect.title"),
           importLabel: t("import.one"),
@@ -859,6 +861,7 @@
             timeFilter,
             onTimeFilter: (v) => { setTimeFilter(v); setPage(0); },
           }),
+          h(CodexMigrationSummary, { source, sessions: filteredItems, selected, t }),
           // 还没拿到第一批数据：居中显示连接提示（拿到数据后状态就交给底部那条）
           !stream.started && !error && h("div", { style: style.status }, t("scan.hint.start")),
           error && h("div", { style: style.error }, error),

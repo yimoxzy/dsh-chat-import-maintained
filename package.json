@@ -1,7 +1,7 @@
 {
   "name": "dsh-chat-import-maintained",
   "description": "Import conversation history from 25+ AI coding agents into DeepSeek Harness as resumable sessions — tool calls, reasoning and results kept intact, with reverse export. | 把 25+ AI 编程 Agent 的聊天记录导入 DeepSeek Harness 继续对话，保留工具调用、推理与结果，支持反向导出。",
-  "version": "0.27.0-maintained.2",
+  "version": "0.28.0-maintained.1",
   "type": "module",
   "main": "./lib/index.mjs",
   "types": "./lib/index.d.ts",
@@ -60,8 +60,8 @@
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh": ">=0.2.2-rc.1 <0.3.0",
     "@deepseek-ai/dsh-session": ">=0.2.2-rc.1 <0.3.0",
-    "@deepseek-ai/dsh-client-locale": ">=0.1.0-rc.6",
-    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6 <0.3.0",
+    "@deepseek-ai/dsh-client-locale": ">=0.2.2-rc.1 <0.3.0",
+    "@deepseek-ai/dsh-tools": ">=0.2.2-rc.1 <0.3.0",
     "@deepseek-ai/schemastery": ">=3.0.0",
     "react": ">=18.0.0"
   },
@@ -96,13 +96,13 @@
     "transcript"
   ],
   "author": "Nwflower <1679659@qq.com>",
-  "homepage": "https://github.com/Nwflower/dsh-chat-import",
+  "homepage": "https://github.com/yimoxzy/dsh-chat-import-maintained",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Nwflower/dsh-chat-import.git"
+    "url": "git+https://github.com/yimoxzy/dsh-chat-import-maintained.git"
   },
   "bugs": {
-    "url": "https://github.com/Nwflower/dsh-chat-import/issues"
+    "url": "https://github.com/yimoxzy/dsh-chat-import-maintained/issues"
   },
   "engines": {
     "node": ">=22.13"

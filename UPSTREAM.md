@@ -3,22 +3,30 @@
 This is **dsh-chat-import-maintained**, an independently maintained fork of [Nwflower/dsh-chat-import](https://github.com/Nwflower/dsh-chat-import), released under the original MIT license. Preserve LICENSE and the original copyright notices when redistributing.
 
 - Upstream baseline: `c6097b3` (`0.26.5`).
-- Maintained release: `0.27.0-maintained.1`.
-- Branch: `maintained/codex-projects`.
-- Distribution identity: `dsh-chat-import-maintained`. This checkout has not been published to npm or pushed to a personal Git hosting account.
-- The original Git remote is named `upstream` for fetching updates. Set your own repository as `origin` before publishing; see [maintenance guide](docs/MAINTAINING.zh-CN.md).
+- Current maintained release: `0.28.0-maintained.1`.
+- Maintained source: [yimoxzy/dsh-chat-import-maintained](https://github.com/yimoxzy/dsh-chat-import-maintained).
+- Local maintenance branch: `maintained/codex-projects`; public source is on `main`.
+- Original remote: `upstream`. The maintained package has not been published to npm.
 
-## Intent
+## Maintained release history
 
-Keep upstream's existing format adapters and add a dedicated Codex project migration entry. The project entry reads desktop SQLite history plus JSONL fallback, retains source names and complete history, and verifies native projections, workspaces and sidebar list notifications. It uses a separate migration ledger and never changes Codex source files or rewrites a previously imported conversation.
+- `0.27.0-maintained.1` introduced the Codex SQLite/JSONL project adapter, complete history, native checkpoint pricing and isolated project ledger.
+- `0.27.0-maintained.2` corrected the bundle patch to resolve the maintained package instead of an installed upstream module.
+- `0.28.0-maintained.1` unifies modern Codex handling in the normal Import tab when Codex is selected. It adds read-only action classification, verified legacy adoption and guarded native append-only source updates. The duplicate project tab is removed.
 
-The upstream and maintained packages expose overlapping tools, routes and UI. **Enable only one at a time.** Existing upstream import records are preserved. The new Codex project ledger does not silently adopt historical manual imports; preview before importing projects that were previously migrated by scripts.
+## Intent and boundaries
+
+Keep upstream's existing format adapters. The selected Codex source reads desktop SQLite history plus JSONL fallback, retains original names and complete history and verifies native projections, project membership and sidebar notifications. The tool and UI share the migration plan. Direct file/JSONL imports and all-source discovery retain their upstream generic paths.
+
+A separate project ledger can adopt recognized legacy imports only after exact source identity, cwd/workspace evidence and complete content-prefix verification. Identical verified adoption records the ledger without appending messages. Source growth appends only when previous source turns are a proven prefix, target conversation atoms remain unchanged and a guarded native writer is available: an exclusive lease for a cold target or validated synchronous appends on the current idle live Session. Conflicts create a full copy on explicit import; ambiguous matches are refused even with force. No source database writes, automatic wiping or historical-message rewrites occur.
+
+The upstream and maintained packages expose overlapping tools, routes and UI. **Enable only one at a time.** Existing upstream records remain intact. A similar title or folder name is not sufficient to adopt an old conversation; inspect the plan's classification and evidence first.
 
 ## Changes owned by this fork
 
-- `lib/codex-projects/`: source adapter, migration orchestration and dedicated entry points.
+- `lib/codex-projects/`: read-only adapter, plan/adoption/update contracts, migration ledger and shared entry points.
 - `lib/host-invariants.mjs` and host boundary hooks: native checkpoint prices.
 - Generic explicit tool-call advertisement normalization.
-- Dedicated Codex project UI tab, synthetic tests, and maintenance documentation.
+- Unified selected-Codex UI, synthetic tests and maintenance documentation.
 
-Real chat exports, credentials, user databases and local migration backups do not belong in this repository. All committed fixtures must be synthetic.
+Real chat exports, credentials, user databases and local migration backups do not belong in this repository. All committed fixtures must be synthetic. See the [maintenance guide](docs/MAINTAINING.zh-CN.md) and [migration contract](docs/CODEx-PROJECTS.md).

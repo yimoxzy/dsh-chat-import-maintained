@@ -17,15 +17,12 @@
       return h(React.Fragment, null,
         h("div", { style: { display: "flex", flexShrink: 0, borderBottom: "1px solid " + colors.border } },
           tabBtn("import", t("tab.import")),
-          tabBtn("codex-projects", t("codexProjects.tab")),
           tabBtn("history", t("tab.history"))),
         tab === "import"
           ? h(React.Fragment, null,
             h(FileImportPanel, null),
             h(DiscoveryPanel, null))
-          : tab === "codex-projects"
-            ? h(CodexProjectsPanel, null)
-            : h(HistoryPanel, null));
+          : h(HistoryPanel, null));
     }
 
     /** 原生右侧栏「导入会话」tab 面板主体（sidebar.right.pane.tab 槽，session 作用域、

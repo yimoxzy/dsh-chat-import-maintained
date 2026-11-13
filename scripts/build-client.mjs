@@ -48,7 +48,7 @@ export const FRAGMENTS = [
   'toast.js',     // ToastHost（官方 shell.overlay 落点提示；缺 primitives 时自绘横幅）
   'utils.js',     // fmt* / 结果摘要 / 响应解析 worker / postJson 请求出口 / Toggle
   'settings.js',  // 设置页「会话导入」分区 + 同步设置
-  'codex-projects.js', // Dedicated read-only preview and explicit Codex project migration
+  'migration-actions.js', // Codex action previews shared by stock discovery rows
   'tabs.js',      // ImportTabContent / SidebarImportTab / HistoryPanel / SearchableSelect
   'session-tools.js', // row tools: highlight / preview card / content search / delete dialog / sidebar drop
   'discovery.js', // DiscoveryPanel（发现 + 多选导入主面板）及其纯函数 / hooks / 子组件

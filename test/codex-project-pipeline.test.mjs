@@ -32,6 +32,11 @@ async function setup(t) {
       return workspace
     } }
   const host = makeCtx({}, { real: true, workspaceRegistry })
+  host.persistence.open = async (id) => ({
+    header: host.persistence.sessions.get(id).meta,
+    read: async () => ({ events: globalThis.structuredClone(host.persistence.sessions.get(id).events) }),
+    append: async (events) => host.persistence.append(id, events), flush: async () => {}, close: async () => {},
+  })
   const notifications = []
   host.ctx.emit = (name, value) => notifications.push({ name, value })
   host.ctx.sessionController = { list: async () => ({ items: [...host.persistence.sessions].map(([id, record]) => ({ sessionId: id, blank: false,
@@ -110,4 +115,42 @@ test('list service failure preserves successful import result and explicit retry
   assert.equal(out.verification.verified, false)
   assert.ok(out.warnings.some((warning) => warning.code === 'list-service-error'))
   assert.equal(f.host.persistence.sessions.size, 1)
+})
+
+test('verified append-only source growth updates one unchanged DSH target without duplication', async (t) => {
+  const f = await setup(t)
+  const first = await importCodexProjects(f.host.ctx, f.input)
+  assert.equal(first.imported, 1)
+  const id = first.results[0].sessionId
+  const before = globalThis.structuredClone(f.host.persistence.sessions.get(id).events)
+  f.insert(3, { type: 'userMessage', content: [{ type: 'text', text: 'New source turn' }] })
+  f.insert(4, { type: 'agentMessage', text: 'New source answer' })
+  const preview = await importCodexProjects(f.host.ctx, { ...f.input, preview: true })
+  assert.equal(preview.results[0].migrationAction, 'update')
+  const out = await importCodexProjects(f.host.ctx, f.input)
+  assert.equal(out.failed, 0, JSON.stringify(out))
+  assert.equal(out.updated, 1)
+  assert.equal(out.imported, 0)
+  assert.equal(out.results[0].sessionId, id)
+  assert.equal(f.host.persistence.sessions.size, 1)
+  assert.deepEqual(f.host.persistence.sessions.get(id).events.slice(0, before.length), before)
+  const repeated = await importCodexProjects(f.host.ctx, f.input)
+  assert.equal(repeated.alreadyImported, 1)
+})
+
+test('a reserved import identity survives failed creation and prevents blind duplicate retries', async (t) => {
+  const f = await setup(t)
+  f.host.persistence.create = async () => { throw new Error('Synthetic backend failure after reservation') }
+  const first = await importCodexProjects(f.host.ctx, f.input)
+  assert.equal(first.failed, 1)
+  const ledger = JSON.parse(await readFile(join(f.input.stateDirectory, 'ledger.json'), 'utf8'))
+  const entry = Object.values(ledger.sessions)[0]
+  assert.equal(entry.pending, true)
+  assert.equal(entry.sessionId, first.results[0].sessionId)
+  const preview = await importCodexProjects(f.host.ctx, { ...f.input, preview: true })
+  assert.equal(preview.results[0].migrationAction, 'ambiguous')
+  const repeated = await importCodexProjects(f.host.ctx, f.input)
+  assert.equal(repeated.imported, 0)
+  assert.equal(repeated.failed, 1)
+  assert.equal(f.host.persistence.sessions.size, 0)
 })

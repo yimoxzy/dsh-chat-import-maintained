@@ -1,8 +1,8 @@
 # DSH Chat Import — 独立维护版
 
-本分支包名 `dsh-chat-import-maintained`，首版 `0.27.0-maintained.1`。新增“Codex 项目迁移”页及 `codex_project_migrate` 工具，支持 SQLite/JSONL 扫描、项目与会话原名、完整历史、安全重复导入、原生检查点计数和侧栏同步。请停用原版后再启用维护版，两者不能同时运行。专用项目账本不会自动认领此前人工脚本导入的会话，首次使用请先预览，避免重复。
+本分支包名 `dsh-chat-import-maintained`，当前版本 `0.28.0-maintained.1`。统一使用普通“导入”页并选择来源 **Codex**，不再另设“Codex 项目迁移”页。该入口合并 SQLite/JSONL、保留项目与会话原名及完整历史，支持经过完整证据核验的旧会话认领与安全更新；`codex_project_migrate` 工具共用迁移流程。只读规划逐条显示 `new`、`unchanged`、`adoptable`、`update`、`conflict`、`ambiguous`、`missing`，明确点击导入后才写账本或消息。相同旧会话可仅登记账本而不新增消息；源增长只在原轮次前缀、目标正文未变及受保护的原生写入条件成立时追加（冷会话独占租约，已加载会话通过当前 Session 校验后同步追加）；冲突新建完整副本，歧义匹配即使 force 也拒绝。请停用原版后再启用维护版，两者不能同时运行。
 
-安装、升级、回退及合并上游更新见[维护指南](docs/MAINTAINING.zh-CN.md)，来源与许可证见[分支说明](UPSTREAM.md)。本版尚未发布到 npm；下方徽章和历史说明属于上游原项目。
+安装、升级、回退及合并上游更新见[维护指南](docs/MAINTAINING.zh-CN.md)，行为细节见[迁移契约](docs/CODEx-PROJECTS.md)，来源与许可证见[分支说明](UPSTREAM.md)。维护源码位于 [yimoxzy/dsh-chat-import-maintained](https://github.com/yimoxzy/dsh-chat-import-maintained)。直接文件/JSONL 导入及全部来源扫描仍走上游通用路径；选择来源 Codex 时才启用现代项目处理。本版尚未发布到 npm；下方徽章和历史说明属于上游原项目。
 
 <div align="center">
 
