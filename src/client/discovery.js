@@ -155,9 +155,14 @@
         if (names.indexOf(name) === -1) names.push(name);
       }
       const sources = names.slice(0, 3).join(t("result.separator")) + (names.length > 3 ? " …" : "");
+      const failures = warnings.filter((w) => w.severity !== "info");
+      const notes = warnings.filter((w) => w.severity === "info");
+      const parts = [];
+      if (failures.length) parts.push(t("scan.warnings", { n: failures.length, sources }));
+      if (notes.length) parts.push(t("scan.sourceNotes", { n: notes.length }));
       return {
-        text: t("scan.warnings", { n: warnings.length, sources }),
-        title: warnings.map((w) => w.format + " @ " + w.target + ": " + w.error).join("\n"),
+        text: parts.join(t("result.separator")),
+        title: warnings.map((w) => (w.severity === "info" ? w.format + ": " : w.format + " @ " + w.target + ": ") + w.error).join("\n"),
       };
     }
 

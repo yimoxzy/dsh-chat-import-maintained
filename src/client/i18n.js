@@ -100,6 +100,7 @@
         "scan.status.progress": "扫描中 · 已发现 {n} 个",
         // 部分扫描目标失败（已跳过，其余照常列出）；{sources} 为去重后的来源名，悬浮看明细
         "scan.warnings": "{n} 个扫描目标失败，已跳过：{sources}（悬停查看原因）",
+        "scan.sourceNotes": "扫描已完成，{n} 类源数据提示（悬停查看详情）",
         // 底栏：页控件（点开是页码网格）+ 状态文案（扫描进度 / 总数）
         "page.jump": "第 {page} / {pages} 页",
         "page.jump.title": "点击选择页码",
@@ -378,6 +379,7 @@
         "scan.hint.start": "Connecting… cache hits usually take seconds; first full scan may take 15s–1min",
         "scan.status.progress": "Scanning · {n} found",
         "scan.warnings": "{n} scan target(s) failed and were skipped: {sources} (hover for details)",
+        "scan.sourceNotes": "Scan completed with {n} source-data note category(s) (hover for details)",
         "page.jump": "Page {page} / {pages}",
         "page.jump.title": "Pick a page",
         "count.total": "{n} total",

@@ -2,6 +2,20 @@
 
 All notable changes to `dsh-chat-import` are documented here, newest first.
 
+## [0.28.0-maintained.2] - 2026-11-13
+
+[中文](#cn-0.28.0-maintained.2) | [English](#en-0.28.0-maintained.2)
+
+<h3 id="cn-0.28.0-maintained.2">问题修复</h3>
+
+- 展开并按类型汇总 Codex 源数据提示，显示具体原因、记录数量和受影响会话数；不再生成重复的通用英文警告，也不再把附件元数据、空推理等源限制计为“扫描目标失败”。真正的扫描读取异常仍保留失败提示。
+
+<h3 id="en-0.28.0-maintained.2">Bug Fixes</h3>
+
+- Flatten and aggregate Codex source diagnostics with concrete reasons and counts. Informational source limitations no longer masquerade as failed scan targets; actual read failures remain errors.
+
+**Full Changelog**: [v0.28.0-maintained.1...v0.28.0-maintained.2](https://github.com/yimoxzy/dsh-chat-import-maintained/compare/v0.28.0-maintained.1...v0.28.0-maintained.2)
+
 ## [0.28.0-maintained.1] - 2026-11-13
 
 [中文](#cn-0.28.0-maintained.1) | [English](#en-0.28.0-maintained.1)

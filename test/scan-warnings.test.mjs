@@ -117,7 +117,7 @@ function topLevelFunction(name) {
 }
 
 const tr = (key, vars) => {
-  const dict = { 'scan.warnings': '{n} 个扫描目标失败，已跳过：{sources}', 'result.separator': '，' }
+  const dict = { 'scan.warnings': '{n} 个扫描目标失败，已跳过：{sources}', 'result.separator': '，', 'scan.sourceNotes': '扫描已完成，{n} 类源数据提示' }
   const raw = dict[key]
   assert.ok(raw !== undefined, '缺少字典键 ' + key)
   return String(raw).replace(/\{(\w+)\}/g, (_, k) => String(vars && vars[k] !== undefined ? vars[k] : ''))
@@ -148,4 +148,16 @@ test('面板提示：按来源去重列名，悬浮看逐条失败明细', () =>
 test('面板提示：来源过多时只列前三个并省略', () => {
   const notice = scanWarningNotice(['a', 'b', 'c', 'd'].map((f) => ({ format: f, target: '/' + f, error: 'x' })), tr, labelOf)
   assert.equal(notice.text, '4 个扫描目标失败，已跳过：a，b，c …')
+})
+
+test('source-data notes do not claim skipped scan failures and mixed errors remain visible', () => {
+  const notes = [{ severity: 'info', format: 'codex', target: '/codex', error: 'Source reasoning has no text' }]
+  const notice = scanWarningNotice(notes, tr, labelOf)
+  assert.equal(notice.text, '扫描已完成，1 类源数据提示')
+  assert.ok(!notice.text.includes('失败'))
+  assert.equal(notice.title, 'codex: Source reasoning has no text')
+  const mixed = scanWarningNotice([...notes, { format: 'codex', target: '/broken', error: 'EACCES' }], tr, labelOf)
+  assert.match(mixed.text, /^1 个扫描目标失败/)
+  assert.match(mixed.text, /1 类源数据提示/)
+  assert.match(mixed.title, /EACCES/)
 })
